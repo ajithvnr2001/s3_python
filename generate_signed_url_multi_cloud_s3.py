@@ -1,5 +1,6 @@
 import boto3
 from botocore.exceptions import ClientError
+from botocore.client import Config
 
 # Cloud configurations
 CLOUDS = {
@@ -7,8 +8,8 @@ CLOUDS = {
         'client': None,
         'config': {
             'service_name': 's3',
-            'aws_access_key_id': 'key',
-            'aws_secret_access_key': 'sec_key',
+            'aws_access_key_id': 'id',
+            'aws_secret_access_key': 'id',
             'endpoint_url': 'https://eu-central-2.storage.impossibleapi.net',
             'region_name': 'eu-central-2'
         },
@@ -18,10 +19,22 @@ CLOUDS = {
         'client': None,
         'config': {
             'service_name': 's3',
-            'aws_access_key_id': 'key',
-            'aws_secret_access_key': 'sec_key',
+            'aws_access_key_id': 'id',
+            'aws_secret_access_key': 'id',
             'endpoint_url': 'https://s3.ap-northeast-1.wasabisys.com',
             'region_name': 'ap-northeast-1'
+        },
+        'bucket_name': 'bucket'
+    },
+    'CloudflareR2': {
+        'client': None,
+        'config': {
+            'service_name': 's3',
+            'aws_access_key_id': 'id',  # R2 API Access Key ID
+            'aws_secret_access_key': 'id',  # R2 API Secret Access Key
+            'endpoint_url': 'https://account_id.r2.cloudflarestorage.com',  # Replace 'id' with your Account ID
+            'region_name': 'auto',
+            'config': Config(signature_version='s3v4')
         },
         'bucket_name': 'bucket'
     }
@@ -31,11 +44,16 @@ CLOUDS = {
 URL_EXPIRATION = 604800
 
 def initialize_clients():
-    """Initialize S3 clients for both clouds"""
+    """Initialize S3 clients for all clouds"""
     print("Initializing cloud clients...")
     for cloud_name, cloud_info in CLOUDS.items():
         try:
-            cloud_info['client'] = boto3.client(**cloud_info['config'])
+            # Special handling for Cloudflare R2
+            if cloud_name == 'CloudflareR2':
+                config = cloud_info['config'].pop('config', None)
+                cloud_info['client'] = boto3.client(**cloud_info['config'], config=config)
+            else:
+                cloud_info['client'] = boto3.client(**cloud_info['config'])
             print(f"  ✓ {cloud_name} client initialized")
         except Exception as e:
             print(f"  ✗ Failed to initialize {cloud_name} client: {e}")
@@ -53,18 +71,28 @@ def list_files_in_bucket(cloud_name):
         return []
     
     try:
-        response = s3_client.list_objects_v2(Bucket=bucket_name)
+        # Handle pagination for buckets with many files
+        files = []
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket_name)
         
-        if 'Contents' not in response:
+        for page in pages:
+            if 'Contents' in page:
+                files.extend([obj['Key'] for obj in page['Contents']])
+        
+        if not files:
             print(f"  [{cloud_name}] No files found in bucket '{bucket_name}'")
             return []
         
-        files = [obj['Key'] for obj in response['Contents']]
         print(f"  [{cloud_name}] Found {len(files)} file(s) in bucket '{bucket_name}'")
         return files
     
     except ClientError as e:
-        print(f"  [{cloud_name}] Error listing files: {e}")
+        error_code = e.response['Error']['Code']
+        if error_code == 'NoSuchBucket':
+            print(f"  [{cloud_name}] ✗ Bucket '{bucket_name}' does not exist")
+        else:
+            print(f"  [{cloud_name}] ✗ Error listing files: {e}")
         return []
 
 def generate_presigned_urls(cloud_name, file_names):
@@ -101,8 +129,9 @@ def print_urls(all_urls):
     for cloud_name, urls in all_urls.items():
         if urls:
             cloud_info = CLOUDS[cloud_name]
+            endpoint = cloud_info['config']['endpoint_url']
             print(f"\n{cloud_name}:")
-            print(f"Endpoint: {cloud_info['config']['endpoint_url']}")
+            print(f"Endpoint: {endpoint}")
             print(f"Bucket: {cloud_info['bucket_name']}")
             print("-" * 70)
             
@@ -128,8 +157,9 @@ def save_urls_to_file(all_urls, filename='presigned_urls.txt'):
             for cloud_name, urls in all_urls.items():
                 if urls:
                     cloud_info = CLOUDS[cloud_name]
+                    endpoint = cloud_info['config']['endpoint_url']
                     f.write(f"{cloud_name}:\n")
-                    f.write(f"Endpoint: {cloud_info['config']['endpoint_url']}\n")
+                    f.write(f"Endpoint: {endpoint}\n")
                     f.write(f"Bucket: {cloud_info['bucket_name']}\n")
                     f.write("-" * 70 + "\n\n")
                     
@@ -153,14 +183,15 @@ def save_urls_to_file(all_urls, filename='presigned_urls.txt'):
 if __name__ == "__main__":
     print("=" * 70)
     print("PRESIGNED URL GENERATOR")
-    print("Generate 7-Day Access URLs for ImpossibleCloud + Wasabi S3")
+    print("Generate 7-Day Access URLs for Multi-Cloud S3 Storage")
+    print("ImpossibleCloud + Wasabi + Cloudflare R2")
     print("=" * 70)
     print()
     
     # Initialize clients
     initialize_clients()
     
-    # Get files from both clouds and generate URLs
+    # Get files from all clouds and generate URLs
     print("Listing files and generating presigned URLs...")
     print()
     
@@ -186,6 +217,11 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print("SUMMARY")
     print("=" * 70)
+    total_urls = 0
     for cloud_name, urls in all_urls.items():
-        print(f"{cloud_name}: {len(urls)} URL(s) generated")
+        url_count = len(urls)
+        total_urls += url_count
+        print(f"{cloud_name}: {url_count} URL(s) generated")
+    print("-" * 70)
+    print(f"Total: {total_urls} presigned URL(s) generated across all clouds")
     print("=" * 70)
